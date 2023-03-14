@@ -1,38 +1,16 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import { GitHub } from '@actions/github/lib/utils'
 import { CommentsQuery } from './generated/graphql'
 import { queryComments } from './queries/comments'
 import { minimizeComment } from './queries/minimize'
 
-type Octokit = InstanceType<typeof GitHub>
-
-type Inputs = {
-  authors: string[]
-  startsWith: string[]
-  endsWith: string[]
-  contains: string[]
-  token: string
-}
-
-export const run = async (inputs: Inputs): Promise<void> => {
-  if (github.context.payload.pull_request === undefined) {
-    core.info(`non pull_request event: ${github.context.eventName}`)
+export const run = async (): Promise<void> => {
+  if (github.context.payload.issue === undefined) {
+    core.info(`non issue event: ${github.context.eventName}`)
     return
   }
-  const pullNumber = github.context.payload.pull_request.number
-  const octokit = github.getOctokit(inputs.token)
-
-  if (
-    inputs.authors.length === 0 &&
-    inputs.contains.length === 0 &&
-    inputs.startsWith.length === 0 &&
-    inputs.endsWith.length === 0
-  ) {
-    const login = await getCurrentLogin(octokit)
-    core.info(`no condition is given, hide comments created by user ${login}`)
-    inputs.authors = [login]
-  }
+  const pullNumber = github.context.payload.issue.number
+  const octokit = github.getOctokit(core.getInput('token', { required: true }))
 
   const q = await core.group(`query comments in pull request #${pullNumber}`, async () => {
     const q = await queryComments(octokit, {
@@ -44,32 +22,10 @@ export const run = async (inputs: Inputs): Promise<void> => {
     return q
   })
 
-  core.info(
-    `Filter comments by conditions: ${JSON.stringify(
-      {
-        authors: inputs.authors,
-        startsWith: inputs.startsWith,
-        endsWith: inputs.endsWith,
-        contains: inputs.contains,
-      },
-      undefined,
-      2
-    )}`
-  )
-  const filteredComments = filterComments(q, inputs)
+  const filteredComments = filterComments(q)
   for (const c of filteredComments) {
     core.info(`minimize comment ${c.url}`)
     await minimizeComment(octokit, { id: c.id })
-  }
-}
-
-const getCurrentLogin = async (octokit: Octokit) => {
-  try {
-    const { data: user } = await octokit.rest.users.getAuthenticated()
-    return user.login
-  } catch (e) {
-    core.warning(`could not determine the current user: ${String(e)}`)
-    return 'github-actions'
   }
 }
 
@@ -79,7 +35,7 @@ type Comment = NonNullable<
   >[number]
 >
 
-const filterComments = (q: CommentsQuery, inputs: Inputs): Comment[] => {
+const filterComments = (q: CommentsQuery): Comment[] => {
   if (q.repository?.pullRequest?.comments.nodes == null) {
     core.info(`unexpected response: repository === ${JSON.stringify(q.repository)}`)
     return []
@@ -91,27 +47,35 @@ const filterComments = (q: CommentsQuery, inputs: Inputs): Comment[] => {
     }
     comments.push(node)
   }
-  return comments.filter((c) => toMinimize(c, inputs))
+  return comments.filter((c) => toMinimize(c))
 }
 
-export const toMinimize = (c: Comment, inputs: Inputs): boolean => {
+let isNewestPerformance = true
+let isNewestFlake = true
+
+export const toMinimize = (c: Comment): boolean => {
   if (c.isMinimized) {
     return false
   }
-  if (inputs.authors.some((a) => c.author?.login === a)) {
-    core.info(`authors filter matched: ${c.url}`)
+  if (c.author?.login !== 'minikube-pr-bot') {
+    return false
+  }
+  if (c.body.includes('kvm2 driver with docker runtime')) {
+    if (isNewestPerformance) {
+      core.info(`latest performance comment, skipping: ${c.url}`)
+      isNewestPerformance = false
+      return false
+    }
+    core.info(`performance comment: ${c.url}`)
     return true
   }
-  if (inputs.startsWith.some((s) => c.body.trimStart().startsWith(s))) {
-    core.info(`starts-with matched: ${c.url}`)
-    return true
-  }
-  if (inputs.endsWith.some((s) => c.body.trimEnd().endsWith(s))) {
-    core.info(`ends-with matched: ${c.url}`)
-    return true
-  }
-  if (inputs.contains.some((s) => c.body.includes(s))) {
-    core.info(`contains matched: ${c.url}`)
+  if (c.body.includes('These are the flake rates of all failed tests.')) {
+    if (isNewestFlake) {
+      core.info(`latest flake rate comment, skipping: ${c.url}`)
+      isNewestFlake = false
+      return false
+    }
+    core.info(`flake rate comment: ${c.url}`)
     return true
   }
   return false
