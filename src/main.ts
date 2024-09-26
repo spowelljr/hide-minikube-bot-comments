@@ -2,14 +2,7 @@ import * as core from '@actions/core'
 import { run } from './run.js'
 
 const main = async (): Promise<void> => {
-  await run({
-    authors: core.getMultilineInput('authors'),
-    startsWith: core.getMultilineInput('starts-with'),
-    endsWith: core.getMultilineInput('ends-with'),
-    contains: core.getMultilineInput('contains'),
-    issueNumber: issueNumber(core.getInput('issue-number')),
-    token: core.getInput('token', { required: true }),
-  })
+  await run()
 }
 
 const issueNumber = (s: string): number | undefined => {

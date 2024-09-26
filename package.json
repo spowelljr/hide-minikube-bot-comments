@@ -1,5 +1,6 @@
 {
   "private": true,
+  "main": "lib/main.js",
   "scripts": {
     "format": "prettier --write **/*.ts",
     "lint": "eslint .",

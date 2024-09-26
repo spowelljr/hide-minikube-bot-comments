@@ -30759,21 +30759,13 @@ const minimizeComment = async (o, v) => {
 
 
 
-const run = async (inputs) => {
-    const pullNumber = inputs.issueNumber ?? github.context.payload.pull_request?.number;
-    if (pullNumber === undefined) {
-        core.info(`non pull_request event: ${github.context.eventName}`);
+const run = async () => {
+    if (github.context.payload.issue === undefined) {
+        core.info(`non issue event: ${github.context.eventName}`);
         return;
     }
-    const octokit = github.getOctokit(inputs.token);
-    if (inputs.authors.length === 0 &&
-        inputs.contains.length === 0 &&
-        inputs.startsWith.length === 0 &&
-        inputs.endsWith.length === 0) {
-        const login = await getCurrentLogin(octokit);
-        core.info(`no condition is given, hide comments created by user ${login}`);
-        inputs.authors = [login];
-    }
+    const pullNumber = github.context.payload.issue.number;
+    const octokit = github.getOctokit(core.getInput('token', { required: true }));
     const q = await core.group(`query comments in pull request #${pullNumber}`, async () => {
         const q = await queryComments(octokit, {
             owner: github.context.repo.owner,
@@ -30783,29 +30775,13 @@ const run = async (inputs) => {
         core.info(JSON.stringify(q, undefined, 2));
         return q;
     });
-    core.info(`Filter comments by conditions: ${JSON.stringify({
-        authors: inputs.authors,
-        startsWith: inputs.startsWith,
-        endsWith: inputs.endsWith,
-        contains: inputs.contains,
-    }, undefined, 2)}`);
-    const filteredComments = filterComments(q, inputs);
+    const filteredComments = filterComments(q);
     for (const c of filteredComments) {
         core.info(`minimize comment ${c.url}`);
         await minimizeComment(octokit, { id: c.id });
     }
 };
-const getCurrentLogin = async (octokit) => {
-    try {
-        const { data: user } = await octokit.rest.users.getAuthenticated();
-        return user.login;
-    }
-    catch (e) {
-        core.warning(`could not determine the current user: ${String(e)}`);
-        return 'github-actions';
-    }
-};
-const filterComments = (q, inputs) => {
+const filterComments = (q) => {
     if (q.repository?.pullRequest?.comments.nodes == null) {
         core.info(`unexpected response: repository === ${JSON.stringify(q.repository)}`);
         return [];
@@ -30817,26 +30793,33 @@ const filterComments = (q, inputs) => {
         }
         comments.push(node);
     }
-    return comments.filter((c) => toMinimize(c, inputs));
+    return comments.filter((c) => toMinimize(c));
 };
-const toMinimize = (c, inputs) => {
+let isNewestPerformance = true;
+let isNewestFlake = true;
+const toMinimize = (c) => {
     if (c.isMinimized) {
         return false;
     }
-    if (inputs.authors.some((a) => c.author?.login === a)) {
-        core.info(`authors filter matched: ${c.url}`);
+    if (c.author?.login !== 'minikube-pr-bot') {
+        return false;
+    }
+    if (c.body.includes('kvm2 driver with docker runtime')) {
+        if (isNewestPerformance) {
+            core.info(`latest performance comment, skipping: ${c.url}`);
+            isNewestPerformance = false;
+            return false;
+        }
+        core.info(`performance comment: ${c.url}`);
         return true;
     }
-    if (inputs.startsWith.some((s) => c.body.trimStart().startsWith(s))) {
-        core.info(`starts-with matched: ${c.url}`);
-        return true;
-    }
-    if (inputs.endsWith.some((s) => c.body.trimEnd().endsWith(s))) {
-        core.info(`ends-with matched: ${c.url}`);
-        return true;
-    }
-    if (inputs.contains.some((s) => c.body.includes(s))) {
-        core.info(`contains matched: ${c.url}`);
+    if (c.body.includes('Here are the number of top 10 failed tests in each environments with lowest flake rate.')) {
+        if (isNewestFlake) {
+            core.info(`latest flake rate comment, skipping: ${c.url}`);
+            isNewestFlake = false;
+            return false;
+        }
+        core.info(`flake rate comment: ${c.url}`);
         return true;
     }
     return false;
@@ -30846,14 +30829,7 @@ const toMinimize = (c, inputs) => {
 
 
 const main = async () => {
-    await run({
-        authors: core.getMultilineInput('authors'),
-        startsWith: core.getMultilineInput('starts-with'),
-        endsWith: core.getMultilineInput('ends-with'),
-        contains: core.getMultilineInput('contains'),
-        issueNumber: issueNumber(core.getInput('issue-number')),
-        token: core.getInput('token', { required: true }),
-    });
+    await run();
 };
 const issueNumber = (s) => {
     if (!s) {
